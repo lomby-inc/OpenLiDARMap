@@ -23,9 +23,11 @@ PYBIND11_MODULE(openlidarmap_pybind, m) {
     m.def(
         "process_map",
         [](const std::string &map_path, const std::string &scans_dir,
-           const std::string &output_path, const py::array_t<double> &initial_pose_np) {
+           const std::string &output_path, const py::array_t<double> &initial_pose_np,
+           const std::string &odometry_path, bool visualize) {
             try {
                 openlidarmap::config::Config config{};
+                config.pipeline_.visualize = visualize;
                 openlidarmap::pipeline::Pipeline pipeline(config);
 
                 openlidarmap::Vector7d initial_pose;
@@ -39,7 +41,8 @@ PYBIND11_MODULE(openlidarmap_pybind, m) {
                     initial_pose[i] = ptr[i];
                 }
 
-                if (!pipeline.initialize(map_path, scans_dir, output_path, initial_pose)) {
+                if (!pipeline.initialize(map_path, scans_dir, output_path, initial_pose,
+                                         odometry_path)) {
                     throw std::runtime_error("Failed to initialize pipeline");
                 }
 
@@ -51,5 +54,6 @@ PYBIND11_MODULE(openlidarmap_pybind, m) {
             }
         },
         "Process map with given parameters", py::arg("map_path"), py::arg("scans_dir"),
-        py::arg("output_path"), py::arg("initial_pose"));
+        py::arg("output_path"), py::arg("initial_pose"), py::arg("odometry_path") = "",
+        py::arg("visualize") = true);
 }

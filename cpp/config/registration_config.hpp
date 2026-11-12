@@ -26,7 +26,7 @@ struct RegistrationConfig {
           translation_eps(1e-3),
           lambda(1.0),
           max_iterations(1000),
-          verbose(false),
+          verbose(true),
           map_overlap(50),
           removal_horizon(100),
           search_offset(27),

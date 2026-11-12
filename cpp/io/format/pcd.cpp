@@ -1,6 +1,8 @@
 #include "io/format/pcd.hpp"
 
-#include <liblzf/lzf.h>
+extern "C" {
+#include <lzf.h>
+}
 
 #include <cstring>
 #include <fstream>

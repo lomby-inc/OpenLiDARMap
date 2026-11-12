@@ -1,6 +1,7 @@
 #include "core/pose_graph.hpp"
 
 #include "core/pose_factor_abs.hpp"
+#include "core/pose_factor_odom.hpp"
 #include "core/pose_factor_rel.hpp"
 
 namespace openlidarmap {
@@ -38,6 +39,23 @@ void PoseGraph::addConstraint(size_t idx_from,
         problem_.SetManifold(poses_[idx_to].data(), pose_manifold_);
         constraints_[idx_to].second = rel_block_id;
     }
+
+    manageSlidingWindow();
+}
+
+void PoseGraph::addOdometryConstraint(size_t idx_from, size_t idx_to, const Vector7d &delta) {
+    if (poses_.size() > constraints_.size()) {
+        constraints_.emplace_back(std::make_pair(nullptr, nullptr));
+    }
+
+    ceres::ResidualBlockId odom_block_id = problem_.AddResidualBlock(
+        new ceres::AutoDiffCostFunction<OdomPoseError, 6, 7, 7>(
+            new OdomPoseError(delta, config_.odometry_.translation_stddev,
+                              config_.odometry_.rotation_stddev)),
+        new ceres::HuberLoss(1.0), poses_[idx_from].data(), poses_[idx_to].data());
+    problem_.SetManifold(poses_[idx_from].data(), pose_manifold_);
+    problem_.SetManifold(poses_[idx_to].data(), pose_manifold_);
+    constraints_[idx_to].second = odom_block_id;
 
     manageSlidingWindow();
 }

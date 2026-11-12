@@ -14,6 +14,8 @@ public:
     explicit PoseGraph(const config::Config &config, std::deque<Vector7d> &poses);
 
     void addConstraint(size_t idx_from, size_t idx_to, const Vector7d &measurement, bool absolute);
+    // Relative constraint from external odometry: delta = T_from^-1 * T_to
+    void addOdometryConstraint(size_t idx_from, size_t idx_to, const Vector7d &delta);
     bool optimize();
 
 private:

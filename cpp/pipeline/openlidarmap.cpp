@@ -2,7 +2,9 @@
 
 #include <guik/viewer/async_light_viewer.hpp>
 #include <guik/viewer/light_viewer.hpp>
+#include <fstream>
 #include <memory>
+#include <sstream>
 
 #include "io/loader_factory.hpp"
 #include "io/point_cloud_saver.hpp"
@@ -39,7 +41,8 @@ Pipeline::~Pipeline() {
 bool Pipeline::initialize(const std::string &map_path,
                           const std::string &scans_dir,
                           const std::string &output_path,
-                          const Vector7d &initial_pose) {
+                          const Vector7d &initial_pose,
+                          const std::string &odometry_path) {
     output_path_ = output_path;
 
     // Load and initialize map
@@ -50,6 +53,10 @@ bool Pipeline::initialize(const std::string &map_path,
 
     // Get sorted scan files
     scan_files_ = utils::FileUtils::getFiles(scans_dir);
+
+    if (!odometry_path.empty() && !loadOdometry(odometry_path)) {
+        return false;
+    }
 
     // Initialize first two poses
     if (!initializeFirstPoses(initial_pose)) {
@@ -80,6 +87,14 @@ bool Pipeline::initializeFirstPoses(const Vector7d &initial_pose) {
     if (!scan2scan_registration_->initialize(
             first_frame, utils::PoseUtils::poseVectorToIsometry(first_aligned_pose))) {
         return false;
+    }
+
+    // Second frame: predicted by the odometry
+    if (!odometry_.empty()) {
+        last_node_scan_ = 0;
+        addPose(utils::PoseUtils::isometryToPoseVector(
+            utils::PoseUtils::poseVectorToIsometry(first_aligned_pose) * odometryDelta(0, 1)));
+        return true;
     }
 
     // Second frame scan2scan
@@ -144,16 +159,18 @@ bool Pipeline::run() {
 
         processing_thread_ = std::thread(&Pipeline::processingLoop, this);
 
-        while (!stop_requested_) {
+        size_t spin_count = 0;
+        while (!stop_requested_ && !processing_done_) {
             if (config_.pipeline_.visualize && async_viewer) {
                 if (!async_viewer->spin_once()) {
                     stop_requested_ = true;
                     break;
                 }
                 handleVisualizationControls(async_viewer);
-            } else {
+            } else if (spin_count % 100 == 0) {
                 utils::printProgressBar(progress_, current_processing_time_);
             }
+            ++spin_count;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
@@ -179,6 +196,7 @@ void Pipeline::processingLoop() {
             waitIfPaused();
             if (stop_requested_) break;
 
+            current_scan_ = i;
             auto frame = io::LoaderFactory::loadPointCloud(config_, scan_files_[i]);
             if (!processFrame(frame)) {
                 stop_requested_ = true;
@@ -197,6 +215,7 @@ void Pipeline::processingLoop() {
         }
 
         writeResults();
+        processing_done_ = true;
 
     } catch (const std::exception &e) {
         std::cerr << "Processing error: " << e.what() << std::endl;
@@ -207,6 +226,10 @@ void Pipeline::processingLoop() {
 bool Pipeline::processFrame(small_gicp::PointCloud::Ptr &frame) {
     if (!frame || frame->empty()) {
         return false;
+    }
+
+    if (!odometry_.empty()) {
+        return processFrameWithOdometry(frame);
     }
 
     auto initial_guess = utils::PoseUtils::poseVectorToIsometry(poses_[pose_index_]);
@@ -257,7 +280,67 @@ bool Pipeline::processFrame(small_gicp::PointCloud::Ptr &frame) {
 
     scan2scan_registration_->update_config(scan2scan_config_);
 
-    // Save submap
+    saveSubmapFrame(frame);
+
+    // Predict next pose
+    addPose(predictNextPose());
+
+    kitti_poses_.emplace_back(poses_[pose_index_]);
+    pose_index_++;
+
+    return true;
+}
+
+bool Pipeline::processFrameWithOdometry(small_gicp::PointCloud::Ptr &frame) {
+    // Prediction: last graph node composed with the odometry since its scan
+    const auto initial_guess = utils::PoseUtils::poseVectorToIsometry(poses_[pose_index_ - 1]) *
+                               odometryDelta(last_node_scan_, current_scan_);
+
+    if (!utils::PoseUtils::isMoving(initial_guess, poses_[pose_index_ - 1],
+                                    config_.pipeline_.translation_threshold,
+                                    config_.pipeline_.rotation_threshold)) {
+        kitti_poses_.emplace_back(utils::PoseUtils::isometryToPoseVector(initial_guess));
+        return true;
+    }
+
+    poses_[pose_index_] = utils::PoseUtils::isometryToPoseVector(initial_guess);
+    auto processed_frame = preprocess_->preprocess_cloud(frame);
+
+    // Scan-to-map registration
+    auto scan2map_result = scan2map_registration_->register_frame(processed_frame, initial_guess);
+
+    pose_graph_->addOdometryConstraint(
+        pose_index_ - 1, pose_index_,
+        utils::PoseUtils::isometryToPoseVector(odometryDelta(last_node_scan_, current_scan_)));
+    if (scan2map_result.num_inliers > config_.registration_.map_overlap) {
+        pose_graph_->addConstraint(
+            pose_index_, pose_index_,
+            utils::PoseUtils::isometryToPoseVector(scan2map_result.T_target_source), true);
+    }
+
+    if (!pose_graph_->optimize()) {
+        return false;
+    }
+
+    // Only used for the visualization in this mode
+    if (config_.pipeline_.visualize) {
+        scan2scan_registration_->get_map()->distance_insert(
+            *processed_frame, utils::PoseUtils::poseVectorToIsometry(poses_[pose_index_]));
+    }
+
+    saveSubmapFrame(frame);
+
+    // Placeholder for the next node, set from the odometry when it is processed
+    addPose(poses_[pose_index_]);
+
+    kitti_poses_.emplace_back(poses_[pose_index_]);
+    last_node_scan_ = current_scan_;
+    pose_index_++;
+
+    return true;
+}
+
+void Pipeline::saveSubmapFrame(const small_gicp::PointCloud::Ptr &frame) {
     if (config_.pipeline_.save_submaps) {
         if (!current_submap_) {
             constexpr auto resolution = 0.25;
@@ -280,14 +363,42 @@ bool Pipeline::processFrame(small_gicp::PointCloud::Ptr &frame) {
             last_save_distance_ = 0.0;
         }
     }
+}
 
-    // Predict next pose
-    addPose(predictNextPose());
+bool Pipeline::loadOdometry(const std::string &odometry_path) {
+    std::ifstream file(odometry_path);
+    if (!file.is_open()) {
+        std::cerr << "Could not open odometry file: " << odometry_path << std::endl;
+        return false;
+    }
 
-    kitti_poses_.emplace_back(poses_[pose_index_]);
-    pose_index_++;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream ss(line);
+        Vector7d pose;
+        for (int i = 0; i < 7; ++i) {
+            if (!(ss >> pose[i])) {
+                std::cerr << "Bad odometry line (expected x y z qx qy qz qw): " << line
+                          << std::endl;
+                return false;
+            }
+        }
+        odometry_.emplace_back(utils::PoseUtils::poseVectorToIsometry(pose));
+    }
 
+    if (odometry_.size() != scan_files_.size()) {
+        std::cerr << "Odometry has " << odometry_.size() << " poses but there are "
+                  << scan_files_.size() << " scans" << std::endl;
+        odometry_.clear();
+        return false;
+    }
+    std::cout << "Using external odometry: " << odometry_path << std::endl;
     return true;
+}
+
+Eigen::Isometry3d Pipeline::odometryDelta(size_t from_scan, size_t to_scan) const {
+    return odometry_[from_scan].inverse() * odometry_[to_scan];
 }
 
 void Pipeline::writeResults() const {

@@ -15,6 +15,10 @@ set(PYBIND11_NEWPYTHON ON)
 find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
+# Resolve bundled libraries next to the module and non-system deps (e.g. Iridescence) via link paths
+set(CMAKE_INSTALL_RPATH "$ORIGIN")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+
 # Build core library
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../cpp ${CMAKE_BINARY_DIR}/../cpp)
 
@@ -24,7 +28,7 @@ target_link_libraries(openlidarmap_pybind PRIVATE openlidarmap_lib)
 
 # Install into Python package structure
 set(PYTHON_PACKAGE_DIR "openlidarmap_pybind")
-install(TARGETS openlidarmap_lib DESTINATION ${PYTHON_PACKAGE_DIR})
+install(TARGETS openlidarmap_lib small_gicp DESTINATION ${PYTHON_PACKAGE_DIR})
 install(TARGETS openlidarmap_pybind DESTINATION ${PYTHON_PACKAGE_DIR})
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/${PYTHON_PACKAGE_DIR}/__init__.py" "from .openlidarmap_pybind import *")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PYTHON_PACKAGE_DIR}/__init__.py" DESTINATION ${PYTHON_PACKAGE_DIR})

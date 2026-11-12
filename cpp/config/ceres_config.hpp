@@ -16,7 +16,7 @@ struct CeresConfig {
         : solver_type(ceres::SPARSE_NORMAL_CHOLESKY),
           num_iterations(100),
           print(false),
-          num_threads(12),
+          num_threads(6),
           sliding_window_size(25),
           use_sliding_window(true) {}
 };

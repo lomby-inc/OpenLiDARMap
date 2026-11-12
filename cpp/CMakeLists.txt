@@ -15,6 +15,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3")
 find_package(Eigen3 REQUIRED)
 find_package(Ceres REQUIRED)
 find_package(Iridescence REQUIRED)
+find_package(TBB REQUIRED)
 
 find_path(LIBLZF_INCLUDE_DIR lzf.h PATH_SUFFIXES liblzf)
 find_library(LIBLZF_LIBRARY NAMES lzf liblzf)
@@ -46,7 +47,7 @@ add_library(
 target_include_directories(openlidarmap_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} PRIVATE ${small_gicp_INCLUDE_DIRS}
                                                                                        ${LIBLZF_INCLUDE_DIR})
 
-target_link_libraries(openlidarmap_lib PUBLIC Eigen3::Eigen small_gicp Ceres::ceres PRIVATE Iridescence::Iridescence
+target_link_libraries(openlidarmap_lib PUBLIC Eigen3::Eigen small_gicp Ceres::ceres TBB::tbb PRIVATE Iridescence::Iridescence
                                                                                             stdc++fs ${LIBLZF_LIBRARY})
 
 # Add executable
